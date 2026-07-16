@@ -1,0 +1,36 @@
+name: V3.9 每日自动量化推演
+
+on:
+  schedule:
+    # 每天北京时间早上 8 点自动启动 (UTC时间 0点)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 留一个手动触发按钮，方便我们随时点
+
+jobs:
+  run-prediction:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 拉取仓库文件
+        uses: actions/checkout@v3
+
+      - name: 🐍 启动云端 Python 电脑
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 📦 安装量化引擎依赖
+        run: pip install pandas numpy xgboost scikit-learn supabase joblib
+
+      - name: 🚀 执行 V3.9 预测流水线
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: python run.py
+
+      - name: 💾 将预测表格保存回 GitHub
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add final_prediction.csv
+          git commit -m "Auto-update daily predictions" || echo "今天没新比赛，无需更新"
+          git push
