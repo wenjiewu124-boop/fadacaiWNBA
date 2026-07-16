@@ -1,0 +1,30 @@
+name: WNBA 数据仓库每日自动增量 ETL
+
+on:
+  schedule:
+    # 每天北京时间早上 5 点启动（确保 8 点预测时特征已在数据库里备妥）
+    - cron: '0 21 * * *'
+  workflow_dispatch: # 允许我们手动点击运行
+
+jobs:
+  run-data-pipeline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 拉取仓库文件
+        uses: actions/checkout@v3
+
+      - name: 🐍 启动云端 Python 3.10 环境
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 📦 安装数据库与计算依赖
+        run: pip install pandas numpy supabase requests urllib3
+
+      - name: 🚀 执行 V3.9 数据集装箱更新
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          API_BASKETBALL_KEY: ${{ secrets.API_BASKETBALL_KEY }}
+          ESPN_API_KEY: ${{ secrets.ESPN_API_KEY }}
+        run: python main.py
