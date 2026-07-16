@@ -1,0 +1,20 @@
+{
+    "version": "V3.9 Production Candidate",
+    "team_features": [
+        "team_strength_diff",
+        "home_advantage",
+        "rest_days_diff",
+        "fatigue_diff"
+    ],
+    "player_features": [
+        "player_impact_diff"
+    ],
+    "fusion_weights": {
+        "team_prob": 0.6,
+        "player_prob": 0.4
+    },
+    "adjustments": {
+        "soft_shrink_factor": 0.8,
+        "penalty_shrink_factor": 0.7
+    }
+}
