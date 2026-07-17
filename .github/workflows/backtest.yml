@@ -1,0 +1,39 @@
+name: V3.9 Historical Backtest
+
+on:
+  workflow_dispatch: # 明确要求：只允许手动触发，绝对不会干扰每日自动运行的生产脚本
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas numpy joblib supabase scikit-learn
+
+    - name: Execute V3.9 Backtest Engine
+      env:
+        # 确保回测脚本能正常读取历史数据库
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: |
+        echo "===== 🚀 V3.9 Historical Backtest Engine 启动 ====="
+        python backtest_v39.py
+
+    - name: Upload Backtest Reports (CSV & TXT)
+      uses: actions/upload-artifact@v4
+      with:
+        name: V39_Backtest_Results
+        path: |
+          V3.9_Backtest_Report.csv
+          V3.9_Backtest_Summary.txt
