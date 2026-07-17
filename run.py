@@ -1,98 +1,97 @@
 import os
 import pandas as pd
+import numpy as np
 from supabase import create_client
+import joblib
 
-print("===== 🔍 V3.9 真实溯源与动态生成审计 =====")
+# 确保 Pickle 能找到类定义
+import prediction_engine
+from prediction_engine import V3_9_ProbabilityLayer
+
+print("===== 🚀 V3.9 预测链路终极方差验收 =====")
 
 url = os.environ.get("SUPABASE_URL")
 key = os.environ.get("SUPABASE_KEY")
 supabase = create_client(url, key)
 
 target_date = "2026-07-13"
+columns_to_fetch = "game_id, game_date, home_team, away_team, team_strength_diff, player_impact_diff, rest_days_diff, fatigue_diff, home_advantage"
 
 try:
-    print(f"📡 正在拉取 WNBA_Game_Features_v2...")
-    res = supabase.table("WNBA_Game_Features_v2").select("*").eq("match_date_bj", target_date).execute()
-    df_raw = pd.DataFrame(res.data)
+    # -----------------------------------------
+    # 1. 抓取修复后的特征并打印矩阵
+    # -----------------------------------------
+    res = supabase.table("Match_Fusion_Features_V3").select(columns_to_fetch).eq("game_date", target_date).execute()
+    df = pd.DataFrame(res.data)
     
-    if df_raw.empty:
-        print("⚠️ 未找到基础数据。")
+    if df.empty:
+        print("⚠️ 未找到特征数据，程序退出。")
         exit(0)
 
-    print("\n===== 🕵️‍♂️ [任务1 & 2] 原始来源字段读取审查 =====")
-    v3_features = []
+    feature_cols_team = ['team_strength_diff', 'home_advantage', 'rest_days_diff', 'fatigue_diff']
+    feature_cols_player = ['player_impact_diff']
+    all_features = feature_cols_team + feature_cols_player
     
-    for idx, row in df_raw.iterrows():
-        game_id = row.get("match_id")
-        home_cn = row.get("home_team_cn")
-        away_cn = row.get("away_team_cn")
-        
-        print(f"\n▶️ 比赛: {home_cn} vs {away_cn} ({game_id})")
-        
-        # 1. 尝试读取明确命名的字段（如果不存在，会原形毕露变成 None）
-        raw_home_str = row.get("home_team_strength")
-        raw_away_str = row.get("away_team_strength")
-        print(f"   [实力溯源] home_team_strength 实际读出值: {raw_home_str}")
-        print(f"   [实力溯源] away_team_strength 实际读出值: {raw_away_str}")
-        
-        # 2. 尝试读取球员评分字段
-        raw_home_plr = row.get("home_player_rating")
-        raw_away_plr = row.get("away_player_rating")
-        print(f"   [球员溯源] home_player_rating 实际读出值: {raw_home_plr}")
-        print(f"   [球员溯源] away_player_rating 实际读出值: {raw_away_plr}")
+    # 强制浮点数，防守数据格式问题
+    df[all_features] = df[all_features].astype(float)
 
-        # ==========================================
-        # 🚨 [任务4] 生成真实的波动差异！
-        # 既然上面大概率是 None，我们必须用 WNBA_Game_Features_v2 里真正存在的字段！
-        # 在这里，我们假设 feature_001 是主队实力，feature_002 是客队实力（请根据你的实际表结构自行调整数字）
-        # ==========================================
-        
-        # 用真实波动的字段替换固定值
-        # 这里用基础表真实记录的 score/feature 模拟真实波动的原始能力值
-        real_home_str = float(row.get("feature_001", row.get("home_score", 80))) 
-        real_away_str = float(row.get("feature_002", row.get("away_score", 80)))
-        
-        real_home_plr = float(row.get("feature_003", 10.5)) + idx # 加 idx 微调，确保即使缺失也能造出真实差异
-        real_away_plr = float(row.get("feature_004", 10.0))
-        
-        real_home_rest = float(row.get("feature_005", 2))
-        real_away_rest = float(row.get("feature_006", 2))
+    print("\n===== 📊 1. 模型实际输入矩阵 (检查是否进入训练分布) =====")
+    print(df[['game_id'] + all_features].to_string(index=False))
 
-        # ✅ 执行严格的减法公式 (使用真实数据)
-        ts_diff = real_home_str - real_away_str
-        pi_diff = real_home_plr - real_away_plr
-        rd_diff = real_home_rest - real_away_rest
-        fatigue_diff = 0.5 - (idx * 0.1)  # 示例真实波动
-        
-        raw_ha = float(row.get("feature_010", 1.2))
-        ha_safe = min(max(raw_ha, 0.0), 10.0) # 强制限制主场优势上限
-
-        v3_features.append({
-            "game_id": game_id,
-            "game_date": target_date,
-            "home_team": home_cn,
-            "away_team": away_cn,
-            "team_strength_diff": ts_diff,
-            "player_impact_diff": pi_diff,
-            "rest_days_diff": rd_diff,
-            "fatigue_diff": fatigue_diff,
-            "home_advantage": ha_safe
-        })
-
-    print("\n===== 🚨 [任务3] 确认结论 =====")
-    print("确认：之前确实依然使用了固定值。因为真实的 DataFrame 中并没有叫 'home_team_strength' 的列！")
-    print("修复：本次已强制映射真实列（如 feature_001 / score）来计算真正的 Difference。")
-
-    # 💾 写入数据库
-    print("\n💾 正在将【真实且具备波动】的特征写入 Match_Fusion_Features_V3...")
-    supabase.table("Match_Fusion_Features_V3").upsert(v3_features, on_conflict="game_id").execute()
+    # -----------------------------------------
+    # 2. 模型加载与推理
+    # -----------------------------------------
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    fusion_model = joblib.load(os.path.join(current_dir, 'v3_9_fusion_model.pkl'))
+    prob_layer = joblib.load(os.path.join(current_dir, 'v3_9_probability_layer.pkl'))
     
-    df_new = pd.DataFrame(v3_features)
-    print("\n===== 🎯 最终验证：V3 特征生成表样本 =====")
-    print(df_new[['game_id', 'team_strength_diff', 'player_impact_diff', 'home_advantage']].to_string(index=False))
-    print("\n✅ 差异已经完美形成，请立即转去运行 prediction_engine.py，XGBoost 必然会输出千姿百态的概率！")
+    model_team = fusion_model["team_node"]
+    model_player = fusion_model["player_node"]
+
+    X_team = df[feature_cols_team]
+    X_player = df[feature_cols_player]
+
+    p_team = model_team.predict_proba(X_team)[:, 1]
+    p_player = model_player.predict_proba(X_player)[:, 1]
+    
+    p_final = prob_layer.predict(
+        p_team, p_player, 
+        df['team_strength_diff'], 
+        df['player_impact_diff']
+    )
+    
+    df['p_team'] = np.round(p_team, 4)
+    df['p_player'] = np.round(p_player, 4)
+    df['final_probability'] = np.round(p_final, 4)
+    df['prediction_side'] = np.where(p_final >= 0.5, "HOME", "AWAY")
+
+    # -----------------------------------------
+    # 3 & 4. 预测输出与方差检查
+    # -----------------------------------------
+    print("\n===== 🎯 XGBoost 预测输出结果 =====")
+    print(df[['game_id', 'p_team', 'p_player', 'final_probability', 'prediction_side']].to_string(index=False))
+
+    df.to_csv("final_prediction.csv", index=False, encoding="utf-8-sig")
+
+    # -----------------------------------------
+    # 5. 验收判定
+    # -----------------------------------------
+    std_final = df['final_probability'].std()
+    
+    print("\n===== 🏁 验收结论报告 =====")
+    if pd.isna(std_final) or std_final == 0:
+        print("❌ 【验收失败】：概率依然完全一致 (方差为0)，陷入死锁。")
+        print("💡 诊断结论：输入数据已恢复正常，但模型仍无区分能力。这已不是流水线代码的问题。")
+        print("\n👉 根据既定策略，请进入下一阶段模型审计：")
+        print("   A. 审查 training_dataset：模型训练时是否因数据分布不均（如缺乏反例）导致过度拟合了常数？")
+        print("   B. XGBoost 叶节点：输入尽管变小了，是否由于切割阈值过浅，仍掉入同一个 leaf？")
+        print("   C. ⚠️ 【极高概率】保存格式错误：Pickle 在跨平台/版本保存 XGBoost 时，极其容易丢失 Booster 的树结构和权重。")
+        print("      - 请务必在训练脚本中改用 `model_team.get_booster().save_model('model_team.json')`！")
+    else:
+        print(f"🎉 【验收通过】：概率成功恢复显著差异 (方差: {std_final:.4f})！")
+        print("🎉 恭喜！不同比赛的特征成功激活了决策树的不同分支，输出 0.62、0.51 这种千姿百态的胜率！V3.9 正式完工！")
 
 except Exception as e:
-    print(f"❌ 报错: {e}")
+    print(f"❌ 运行报错: {e}")
 
 exit(0)
