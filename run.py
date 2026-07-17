@@ -1,72 +1,92 @@
-import os
+import joblib
 import pandas as pd
-from supabase import create_client
+import numpy as np
+import os
 
-# 💡 请在这里导入你真实的预测引擎文件，例如：
-# import prediction_engine 
-# import torch (如果是用 PyTorch)
+class V3_9_ProbabilityLayer:
+    def __init__(self, team_weight=0.6, player_weight=0.4, soft_shrink=0.8, penalty_shrink=0.7):
+        self.tw = team_weight
+        self.pw = player_weight
+        self.ss = soft_shrink
+        self.ps = penalty_shrink
+        
+    def predict(self, p_team, p_player, team_diffs, player_diffs):
+        p_t, p_p = np.asarray(p_team), np.asarray(p_player)
+        t_d, p_d = np.asarray(team_diffs), np.asarray(player_diffs)
+        
+        raw = (p_t * self.tw) + (p_p * self.pw)
+        soft = 0.5 + (raw - 0.5) * self.ss
+        final = soft.copy()
+        mask_penalty = (np.abs(t_d) > 15.0) & (np.abs(p_d) < 3.0)
+        final[mask_penalty] = 0.5 + (soft[mask_penalty] - 0.5) * self.ps
+        return final
 
-print("===== 🔍 V3.9 预测引擎真实性审计 =====")
-
-# 1. 连数据库
-url = os.environ.get("SUPABASE_URL")
-key = os.environ.get("SUPABASE_KEY")
-supabase = create_client(url, key)
-
-target_date = "2026-07-13"
-columns_to_fetch = "game_id, team_strength_diff, player_impact_diff, rest_days_diff, fatigue_diff, home_advantage"
-
-try:
-    print("📡 1. 正在拉取 V3.9 输入特征...")
-    res = supabase.table("Match_Fusion_Features_V3").select(columns_to_fetch).eq("game_date", target_date).execute()
-    df = pd.DataFrame(res.data)
+def run_prediction(daily_data):
+    print("🚨 启动 V3.9 实盘预测引擎 (深度审计模式)...")
     
-    if df.empty:
-        print("⚠️ 未找到数据。")
-        exit(0)
-
-    # 声明预测公式使用的全部输入字段
-    feature_cols = ['team_strength_diff', 'player_impact_diff', 'rest_days_diff', 'fatigue_diff', 'home_advantage']
-    print(f"✅ 模型核准输入字段: {feature_cols}")
-
-    print("\n⚙️ 2. 正在载入真实预测公式进行推演...")
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    fusion_model = joblib.load(os.path.join(current_dir, 'v3_9_fusion_model.pkl'))
+    prob_layer = joblib.load(os.path.join(current_dir, 'v3_9_probability_layer.pkl'))
     
-    # ⬇️⬇️⬇️ 【真实模型调用区】 ⬇️⬇️⬇️
-    # ⚠️ 请把下面这行替换为你真实调用模型预测的代码
-    # 例如： df['home_win_probability'] = prediction_engine.predict(df[feature_cols])
+    model_team = fusion_model["team_node"]
+    model_player = fusion_model["player_node"]
     
-    # [临时占位：如果还没接上，先用这个简单的线性权重公式测试逻辑连通性]
-    import math
-    def audit_model(row):
-        score = (float(row['team_strength_diff']) * 0.4 + 
-                 float(row['player_impact_diff']) * 0.3 + 
-                 float(row['home_advantage']) * 0.2 + 
-                 float(row['rest_days_diff']) * 0.1 - 
-                 float(row['fatigue_diff']) * 0.1)
-        return round(1 / (1 + math.exp(-score)), 4)
+    feature_cols_team = ['team_strength_diff', 'home_advantage', 'rest_days_diff', 'fatigue_diff']
+    feature_cols_player = ['player_impact_diff']
     
-    df['home_win_probability'] = df.apply(audit_model, axis=1) # <-- 替换这里
-    # ⬆️⬆️⬆️ 【真实模型调用区】 ⬆️⬆️⬆️
-
-    df['away_win_probability'] = 1 - df['home_win_probability']
-    df['final_probability'] = df[['home_win_probability', 'away_win_probability']].max(axis=1)
-
-    print("\n===== 📊 每场比赛审计报告 =====")
-    for index, row in df.iterrows():
-        print(f"▶️ Game ID: {row['game_id']}")
-        print(f"   [输入] 实力差:{row['team_strength_diff']:>5} | 影响差:{row['player_impact_diff']:>5} | 休息差:{row['rest_days_diff']:>5} | 疲劳差:{row['fatigue_diff']:>5} | 主场优势:{row['home_advantage']:>5}")
-        print(f"   [输出] 主胜概率: {row['home_win_probability']:.4f} | 客胜概率: {row['away_win_probability']:.4f} | 最终置信度: {row['final_probability']:.4f}")
-        print("-" * 60)
-
-    print("\n===== 🔍 终极诊断结论 =====")
-    std_prob = df['final_probability'].astype(float).std()
+    daily_data[feature_cols_team + feature_cols_player] = daily_data[feature_cols_team + feature_cols_player].astype(float)
+    X_team = daily_data[feature_cols_team]
+    X_player = daily_data[feature_cols_player]
     
-    if pd.isna(std_prob) or std_prob == 0:
-        print("❌ 警报：输入特征不同，但 final_probability 居然完全相同！预测公式存在逻辑断层。")
+    print("\n" + "="*40)
+    print("🔍 [阶段 1] 模型结构与标准化审计")
+    print(f"▶️ 球队节点模型类型: {type(model_team)}")
+    
+    # 检查是否有 StandardScaler
+    if hasattr(model_team, 'steps'):
+        print(f"▶️ 检测到 Pipeline，包含处理步骤: {model_team.steps}")
     else:
-        print("🎉 通关验证：输入特征差异成功向后传导，最终预测胜率呈现健康波动！")
+        print("⚠️ 警告：模型是裸奔状态（非 Pipeline），极可能【缺少标准化 (Normalization)】！")
+        
+    # 检查权重系数
+    if hasattr(model_team, 'coef_'):
+        print(f"▶️ 模型权重系数 (Weights): {model_team.coef_}")
+        print(f"▶️ 模型偏置项 (Intercept): {model_team.intercept_}")
 
-except Exception as e:
-    print(f"❌ 运行报错: {e}")
-
-exit(0)
+    print("\n" + "="*40)
+    print("🧮 [阶段 2] Sigmoid 饱和度与 Raw Score 审计")
+    print("💡 概率计算公式位置: \n   封装在 model.predict_proba() 内部。其数学等价为: 1 / (1 + exp(-raw_score))")
+    
+    # 抽取进入 Sigmoid 之前的 Raw Score (仅限逻辑回归/SVM等模型)
+    if hasattr(model_team, 'decision_function'):
+        raw_score_team = model_team.decision_function(X_team)
+        print(f"\n🚨 [极其关键] 喂给 Sigmoid 函数的 raw_score: \n   {raw_score_team}")
+        
+        # 诊断饱和
+        if np.any(np.abs(raw_score_team) > 5.0):
+            print("\n❌ 诊断报告: 触发【Sigmoid 饱和击穿】！")
+            print("   原因: raw_score 的绝对值太大了 (超过了 5.0)，指数运算后分母趋近于 1 或 0。")
+            print("   后果: predict_proba 被迫强制输出 1.0 或 0.0。")
+    else:
+        print("\n⚠️ 底层模型不支持 decision_function (可能是树模型)，无法直接截获 raw_score。")
+    
+    print("\n" + "="*40)
+    print("🎯 [阶段 3] 最终输出对照")
+    
+    p_team = model_team.predict_proba(X_team)[:, 1]
+    p_player = model_player.predict_proba(X_player)[:, 1]
+    
+    print(f"▶️ p_team (球队节点输出): {np.round(p_team, 4)}")
+    print(f"▶️ p_player (球员节点输出): {np.round(p_player, 4)}")
+    
+    p_final = prob_layer.predict(
+        p_team, p_player, 
+        daily_data['team_strength_diff'], 
+        daily_data['player_impact_diff']
+    )
+    
+    daily_data['final_probability'] = np.round(p_final, 4)
+    daily_data['prediction_side'] = np.where(p_final >= 0.5, "HOME", "AWAY")
+    
+    print("=======================================\n")
+    return daily_data
