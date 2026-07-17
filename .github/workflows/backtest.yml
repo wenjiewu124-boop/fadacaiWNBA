@@ -21,6 +21,14 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas numpy joblib supabase scikit-learn xgboost
 
+    - name: Execute V3.9 Backfill Engine
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: |
+        echo "===== 🚜 运行历史数据补齐 (Backfill) ====="
+        python backfill_v3_data.py
+
     - name: Execute V3.9 Backtest Engine
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
