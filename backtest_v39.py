@@ -5,7 +5,7 @@ import joblib
 from supabase import create_client
 from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
 
-# 1. 声明 V3.9 核心概率收缩层 (确保 Pickle 正常加载依赖)
+# 1. 声明 V3.9 核心概率收缩层
 class V3_9_ProbabilityLayer:
     def __init__(self, team_weight=0.6, player_weight=0.4, soft_shrink=0.8, penalty_shrink=0.7):
         self.tw = team_weight
@@ -34,26 +34,66 @@ end_date = "2026-07-17"
 
 try:
     # ==========================================
-    # 任务 1: 拉取历史数据与赛果
+    # 任务 0: 动态嗅探数据库表结构与真实赛果映射
     # ==========================================
-    print(f"📡 正在拉取 {start_date} 至 {end_date} 历史回测数据...")
+    print("🔍 0. 正在嗅探 WNBA_Game_Features_v2 表结构...")
+    res_schema = supabase.table("WNBA_Game_Features_v2").select("*").limit(1).execute()
     
-    # 获取特征表 (假设数据量不超过单次限制，可通过分页拉取全量)
+    if not res_schema.data:
+        print("⚠️ WNBA_Game_Features_v2 表中无数据！")
+        exit(0)
+        
+    db_columns = list(res_schema.data[0].keys())
+    print(f"   ▶️ 实际发现的所有字段列表:\n   {db_columns}\n")
+    
+    # 智能定位赛果字段
+    result_query_cols = "match_id"
+    if "home_score" in db_columns and "away_score" in db_columns:
+        print("   ✅ 锁定赛果字段: [home_score] 与 [away_score]")
+        result_query_cols += ", home_score, away_score"
+    elif "home_win" in db_columns:
+        print("   ✅ 锁定赛果字段: [home_win]")
+        result_query_cols += ", home_win"
+    elif "is_home_win" in db_columns:
+        print("   ✅ 锁定赛果字段: [is_home_win]")
+        result_query_cols += ", is_home_win"
+    elif "winner" in db_columns:
+        print("   ✅ 锁定赛果字段: [winner]")
+        result_query_cols += ", winner"
+    else:
+        print("❌ 无法在表中找到代表赛果的字段，回测终止。请检查上述打印的字段列表！")
+        exit(0)
+
+    # ==========================================
+    # 任务 1: 拉取历史数据与计算标准结果
+    # ==========================================
+    print(f"📡 1. 正在拉取 {start_date} 至 {end_date} 历史回测数据...")
+    
     res_features = supabase.table("Match_Fusion_Features_V3").select(
         "game_id, game_date, home_team, away_team, team_strength_diff, player_impact_diff, rest_days_diff, fatigue_diff, home_advantage"
     ).gte("game_date", start_date).lte("game_date", end_date).limit(5000).execute()
     df_features = pd.DataFrame(res_features.data)
     
-    # 获取真实赛果
+    # 使用刚嗅探到的正确列名去查表
     res_results = supabase.table("WNBA_Game_Features_v2").select(
-        "match_id, is_home_win"
+        result_query_cols
     ).gte("match_date_bj", start_date).lte("match_date_bj", end_date).limit(5000).execute()
     df_results = pd.DataFrame(res_results.data).rename(columns={"match_id": "game_id"})
     
-    # 合并组装
-    df = pd.merge(df_features, df_results, on="game_id", how="inner")
-    df.dropna(subset=['is_home_win'], inplace=True)
-    df['is_home_win'] = df['is_home_win'].astype(int)
+    # 转换为标准的 is_home_win (0或1)
+    if "home_score" in df_results.columns:
+        # 防守字符串类型
+        df_results['home_score'] = pd.to_numeric(df_results['home_score'], errors='coerce')
+        df_results['away_score'] = pd.to_numeric(df_results['away_score'], errors='coerce')
+        df_results['is_home_win'] = (df_results['home_score'] > df_results['away_score']).astype(int)
+    elif "home_win" in df_results.columns:
+        df_results['is_home_win'] = df_results['home_win'].astype(int)
+    
+    # 剔除无效分数的脏数据
+    df_results.dropna(subset=['is_home_win'], inplace=True)
+    
+    # 合并组装大盘数据
+    df = pd.merge(df_features, df_results[['game_id', 'is_home_win']], on="game_id", how="inner")
     
     total_games = len(df)
     if total_games == 0:
@@ -64,7 +104,7 @@ try:
     # ==========================================
     # 任务 2: 加载模型与逐场预测
     # ==========================================
-    print("⚙️ 正在加载当前生产模型并执行批量预测...")
+    print("⚙️ 2. 正在加载当前生产模型并执行批量预测...")
     current_dir = os.path.dirname(os.path.abspath(__file__))
     fusion_model = joblib.load(os.path.join(current_dir, 'v3_9_fusion_model.pkl'))
     prob_layer = joblib.load(os.path.join(current_dir, 'v3_9_probability_layer.pkl'))
@@ -83,24 +123,21 @@ try:
     p_team = model_team.predict_proba(X_team)[:, 1]
     p_player = model_player.predict_proba(X_player)[:, 1]
     
-    # 计算最终主胜概率
     df['home_win_prob'] = prob_layer.predict(p_team, p_player, df['team_strength_diff'], df['player_impact_diff'])
     
-    # 组织输出字段
     df['final_probability'] = np.where(df['home_win_prob'] >= 0.5, df['home_win_prob'], 1 - df['home_win_prob'])
     df['final_probability'] = np.round(df['final_probability'], 4)
     df['prediction_side'] = np.where(df['home_win_prob'] >= 0.5, "HOME", "AWAY")
     df['actual_result'] = np.where(df['is_home_win'] == 1, "HOME", "AWAY")
     df['correct'] = (df['prediction_side'] == df['actual_result']).astype(int)
 
-    # 💾 生成 CSV 报告
     csv_cols = ["game_id", "game_date", "home_team", "away_team", "final_probability", "prediction_side", "actual_result", "correct"]
     df[csv_cols].sort_values("game_date").to_csv("V3.9_Backtest_Report.csv", index=False, encoding="utf-8-sig")
 
     # ==========================================
     # 任务 3: 计算全局指标
     # ==========================================
-    print("🧮 正在计算量化回测指标...")
+    print("🧮 3. 正在计算量化回测指标...")
     accuracy = accuracy_score(df['is_home_win'], (df['home_win_prob'] >= 0.5).astype(int))
     brier = brier_score_loss(df['is_home_win'], df['home_win_prob'])
     logloss = log_loss(df['is_home_win'], df['home_win_prob'])
@@ -157,8 +194,6 @@ try:
 
     report.append("\n===== 🏁 模型终极评级 =====")
     
-    # 根据数据科学通用量化基准进行自动评级
-    # WNBA的商业模型及格线一般在 Acc 0.58, 优秀在 0.62+
     if accuracy >= 0.61 and brier <= 0.23:
         rating = "A. 🟢 可以进入实盘预测 (模型区分度优秀，且概率分布高度校准，符合生产环境要求)"
     elif accuracy >= 0.58 and brier > 0.23:
@@ -169,16 +204,11 @@ try:
     report.append(f"模型评级: {rating}")
     report.append("==================================")
 
-    # 输出到终端并写入 TXT
     report_text = "\n".join(report)
     print(report_text)
     
     with open("V3.9_Backtest_Summary.txt", "w", encoding="utf-8") as f:
         f.write(report_text)
-        
-    print("\n💾 全部报表生成完毕：")
-    print("1. V3.9_Backtest_Report.csv (含逐场详细明细)")
-    print("2. V3.9_Backtest_Summary.txt (含终极数据研报)")
 
 except Exception as e:
     print(f"❌ 运行报错: {e}")
