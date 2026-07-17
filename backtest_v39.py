@@ -34,8 +34,9 @@ try:
     res_features = supabase.table("Match_Fusion_Features_V3").select("*").limit(5000).execute()
     df_features = pd.DataFrame(res_features.data)
     
+    # 🚨 修复点：去掉 is_home_win 查询，只请求一定会存在的 match_id 和比分
     res_results = supabase.table("WNBA_Game_Features_v2").select(
-        "match_id, home_score, away_score, is_home_win"
+        "match_id, home_score, away_score"
     ).limit(5000).execute()
     df_results = pd.DataFrame(res_results.data)
     
@@ -44,7 +45,6 @@ try:
 
     df_results.rename(columns={"match_id": "game_id"}, inplace=True)
     
-    # 🚨 终极防守：强制将双侧 ID 转为纯字符串并去除空格，彻底消灭类型不匹配造成的漏表
     df_features['game_id'] = df_features['game_id'].astype(str).str.strip()
     df_results['game_id'] = df_results['game_id'].astype(str).str.strip()
     
@@ -52,27 +52,17 @@ try:
     
     total_games = len(df)
     
-    # 🐛 数据匹配调试断言
     if total_games < 900:
         print(f"\n⚠️ 警告：合并有效比赛数为 {total_games}，远低于 900 场！")
-        print("===== 🐞 数据匹配调试日志 =====")
-        print(f"V3 融合特征表总数据量: {len(df_features)}")
-        print(f"V2 基础赛果表总数据量: {len(df_results)}")
-        print(f"V3 样本 ID 示例 (Match_Fusion_Features_V3.game_id): {df_features['game_id'].head(5).tolist()}")
-        print(f"V2 样本 ID 示例 (WNBA_Game_Features_v2.match_id): {df_results['game_id'].head(5).tolist()}")
-        print("=============================\n")
     else:
         print(f"✅ 数据关联完美闭环！有效比赛总数: {total_games} 场")
 
-    if 'is_home_win' not in df.columns or df['is_home_win'].isnull().all():
-        df['home_score'] = pd.to_numeric(df['home_score'], errors='coerce')
-        df['away_score'] = pd.to_numeric(df['away_score'], errors='coerce')
-        df['is_home_win'] = (df['home_score'] > df['away_score']).astype(int)
-    else:
-        df['is_home_win'] = pd.to_numeric(df['is_home_win'], errors='coerce')
-        
-    df.dropna(subset=['is_home_win'], inplace=True)
-    df['is_home_win'] = df['is_home_win'].astype(int)
+    # 🚨 修复点：在 Pandas 内存中安全计算真正的赛果 (is_home_win)
+    df['home_score'] = pd.to_numeric(df['home_score'], errors='coerce')
+    df['away_score'] = pd.to_numeric(df['away_score'], errors='coerce')
+    # 踢出那些没有比分（比如还没开赛）的无效数据
+    df.dropna(subset=['home_score', 'away_score'], inplace=True) 
+    df['is_home_win'] = (df['home_score'] > df['away_score']).astype(int)
 
     print("⚙️ 正在执行 XGBoost 矩阵推理...")
     current_dir = os.path.dirname(os.path.abspath(__file__))
