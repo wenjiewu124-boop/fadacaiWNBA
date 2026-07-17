@@ -1,15 +1,17 @@
-name: V3.9 Failure Audit
+name: V3.9 Final Historical Backtest
 
 on:
   workflow_dispatch:
 
 jobs:
-  run-audit:
+  run-backtest:
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+         fetch-depth: 0  # 确保能读到 src 里的源文件
 
     - name: Set up Python 3.10
       uses: actions/setup-python@v5
@@ -21,10 +23,16 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas numpy joblib supabase scikit-learn xgboost
 
-    - name: Execute V3.9 Audit Engine
+    - name: 1. 执行 V3.9 纯血数据重构 (True Backfill)
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       run: |
-        echo "===== 🕵️‍♂️ 启动 V3.9 失败原因审计 ====="
-        python audit_v39_failure.py
+        python historical_backfill_v39.py
+
+    - name: 2. 执行 V3.9 终极回测 (Backtest)
+      env:
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: |
+        python backtest_v39.py
