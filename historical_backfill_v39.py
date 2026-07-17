@@ -79,13 +79,19 @@ try:
     print("💾 [4/4] 正在将干净数据覆盖写入 (Upsert) 数据库...")
     
     # ==========================================
-    # 🚨 核心终极修复：格式强转，秒杀 JSON 序列化报错
+    # 🚨 终极护盾：数据库表列名严格对齐 (脱去所有多余字段)
     # ==========================================
-    # 1. 强制将 Pandas 时间对象转为普通字符串
+    safe_columns = [
+        'game_id', 'game_date', 
+        'team_strength_diff', 'player_impact_diff', 
+        'fatigue_diff', 'rest_days_diff', 'home_advantage'
+    ]
+    # 只保留 safe_columns 里有的列，完美适配 Supabase 表结构
+    final_df = final_df[[col for col in safe_columns if col in final_df.columns]]
+    
     if 'game_date' in final_df.columns:
         final_df['game_date'] = final_df['game_date'].astype(str)
     
-    # 2. 将所有 Numpy 数值异常 (NaN) 替换为 Python 原生 None
     records = final_df.replace({pd.NA: None, np.nan: None}).to_dict(orient='records')
     # ==========================================
 
