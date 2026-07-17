@@ -1,67 +1,57 @@
 import os
-import json
-import pandas as pd
 from supabase import create_client
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-import prediction_engine # 叫醒咱们刚写好的预测引擎
 
-print("🚨 1. 拿着保险箱的钥匙，连接 Supabase 数据库...")
+print("===== SUPABASE TABLE AUDIT =====")
+
+# 1. 拿钥匙连接 Supabase
 url = os.environ.get("SUPABASE_URL")
 key = os.environ.get("SUPABASE_KEY")
 supabase = create_client(url, key)
 
-print("📡 2. 获取今日最新比赛特征...")
-# 拉取最新的待预测比赛
-res = supabase.table("Match_Fusion_Features_V3").select("*").order("game_date", desc=True).limit(5).execute()
+# 我们要重点核查的 5 张表
+target_tables = [
+    "Match_Fusion_Features_V3",
+    "team_features_v3",
+    "WNBA_Game_Features_v2",
+    "WNBA_Player_Boxscore",
+    "Player_Rating"
+]
 
-if not res.data:
-    print("⚠️ 今日没有比赛数据，系统自动休眠。")
-    exit()
-
-daily_data = pd.DataFrame(res.data)
-
-print("⚙️ 3. 喂给 V3.9 引擎进行胜率推演...")
-result_df = prediction_engine.run_prediction(daily_data)
-
-print("💾 4. 保存最终预测结果单...")
-# 只保留我们关心的核心字段
-output_df = result_df[['game_date', 'home_team_cn', 'away_team_cn', 'team_strength_diff', 'player_impact_diff', 'final_probability', 'prediction_side']]
-output_df.to_csv("final_prediction.csv", index=False, encoding='utf-8-sig')
-
-print("✅ 任务圆满完成！今日签批单已生成: final_prediction.csv")
-
-# ==========================================
-# 步骤 5 推送至 Google Sheet (金矿)
-# ==========================================
-print("🚀 5. 正在将预测结果推送至 [全息篮球量化交割系统]...")
-gcp_creds_json = os.environ.get("GCP_CREDENTIALS")
-
-if gcp_creds_json:
-    # 解析机器人钥匙
-    creds_dict = json.loads(gcp_creds_json)
-    creds = service_account.Credentials.from_service_account_info(
-        creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets']
-    )
-    # 连接 Google Sheet 服务
-    service = build('sheets', 'v4', credentials=creds)
-    
-    # 已经精准填入你的真实表格 ID
-    SPREADSHEET_ID = '12uCcuAfUCkAf3t7RiOTYO00vVAHIdUxSQ3F9j_6wU7I' 
-    RANGE_NAME = '金矿!A1' # 写入到“金矿”工作表，从 A1 格子开始
-
-    # 准备写入的数据（清理空值防崩溃，并把 DataFrame 加上表头转成列表）
-    output_df = output_df.fillna("") 
-    values = [output_df.columns.values.tolist()] + output_df.values.tolist()
-    body = {'values': values}
-
+print("\nTables:")
+# 通过尝试拉取 1 条数据来真实测试表是否存在 (这是最准确的物理探测)
+for table in target_tables:
     try:
-        # 执行写入覆盖操作
-        result = service.spreadsheets().values().update(
-            spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME,
-            valueInputOption='RAW', body=body).execute()
-        print(f"✅ 成功更新 {result.get('updatedCells')} 个单元格！『金矿』已填满！")
-    except Exception as e:
-        print(f"❌ 写入 Google Sheet 失败: {e}")
-else:
-    print("⚠️ 未找到 GCP_CREDENTIALS，跳过写入 Google Sheet 环节。")
+        supabase.table(table).select("*").limit(1).execute()
+        print(f"{table} (FOUND)")
+    except Exception:
+        print(f"{table} (NOT FOUND)")
+
+print("\nMatch_Fusion_Features_V3:")
+try:
+    # 尝试拉取 V3 表的前 5 条数据
+    res = supabase.table("Match_Fusion_Features_V3").select("*").limit(5).execute()
+    print("FOUND")
+    
+    print("\nColumns:")
+    if res.data and len(res.data) > 0:
+        # 动态提取表头字段名
+        for col in res.data[0].keys():
+            print(col)
+    else:
+        print("表是空的 (Empty Table)，无法通过数据推断字段名。")
+        
+    print("\nSample:")
+    if res.data:
+        for idx, row in enumerate(res.data):
+            print(f"Row {idx + 1}: {row}")
+    else:
+        print("无数据 (No Data Rows)")
+        
+except Exception as e:
+    print("NOT FOUND")
+    print(f"Error: {e}")
+
+print("================================")
+print("探针检测完毕，程序安全退出。")
+# 强制终止程序，绝对不往下执行任何修改数据的预测逻辑
+exit(0)
