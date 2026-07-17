@@ -1,85 +1,67 @@
-# main.py
 import os
-import datetime
+import json
 import pandas as pd
-from supabase import create_client, Client
-from src.processors.feature_generator import calculate_v39_features
+from supabase import create_client
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+import prediction_engine # 叫醒咱们刚写好的预测引擎
 
-# 初始化 Supabase
+print("🚨 1. 拿着保险箱的钥匙，连接 Supabase 数据库...")
 url = os.environ.get("SUPABASE_URL")
 key = os.environ.get("SUPABASE_KEY")
-db_client: Client = create_client(url, key)
+supabase = create_client(url, key)
 
-def fetch_supabase_table(table_name):
-    res = db_client.table(table_name).select("*").execute()
-    return pd.DataFrame(res.data)
+print("📡 2. 获取今日最新比赛特征...")
+# 拉取最新的待预测比赛
+res = supabase.table("Match_Fusion_Features_V3").select("*").order("game_date", desc=True).limit(5).execute()
 
-def main():
-    print("🚨 启动 WNBA-Data-Pipeline 每日增量更新作业...")
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
-    
-    print("📡 正在调用双 API 源抓取 WNBA 增量基础数据...")
-    
-    print("📥 正在拉取数据库历史快照...")
-    df_games = fetch_supabase_table("WNBA_Game_Features_v2")
-    df_box = fetch_supabase_table("WNBA_Player_Boxscore")
-    df_rating = fetch_supabase_table("Player_Rating")
-    
-    # 格式对齐
-    df_games['game_date'] = pd.to_datetime(df_games['match_date_bj'] if 'match_date_bj' in df_games.columns else df_games['game_date'])
-    df_games.rename(columns={'match_id': 'game_id'}, errors='ignore', inplace=True)
-    df_box['game_date'] = pd.to_datetime(df_box['game_date'])
-    
-    # --- 兼容处理上场时间（minutes_num）别名或缺失 ---
-    possible_min_cols = ['minutes_num', 'minutes', 'min', 'mp']
-    matched_min = None
-    for col in df_box.columns:
-        if str(col).strip().lower() in possible_min_cols:
-            matched_min = col
-            break
-    
-    if matched_min:
-        df_box['minutes_num'] = pd.to_numeric(df_box[matched_min], errors='coerce').fillna(15.0)
-    else:
-        df_box['minutes_num'] = 15.0
+if not res.data:
+    print("⚠️ 今日没有比赛数据，系统自动休眠。")
+    exit()
 
-    # --- 兼容处理回合数（possessions）别名或缺失 ---
-    possible_poss_cols = ['possessions', 'poss', 'poss_num']
-    matched_poss = None
-    for col in df_box.columns:
-        if str(col).strip().lower() in possible_poss_cols:
-            matched_poss = col
-            break
+daily_data = pd.DataFrame(res.data)
+
+print("⚙️ 3. 喂给 V3.9 引擎进行胜率推演...")
+result_df = prediction_engine.run_prediction(daily_data)
+
+print("💾 4. 保存最终预测结果单...")
+# 只保留我们关心的核心字段
+output_df = result_df[['game_date', 'home_team_cn', 'away_team_cn', 'team_strength_diff', 'player_impact_diff', 'final_probability', 'prediction_side']]
+output_df.to_csv("final_prediction.csv", index=False, encoding='utf-8-sig')
+
+print("✅ 任务圆满完成！今日签批单已生成: final_prediction.csv")
+
+# ==========================================
+# 步骤 5 推送至 Google Sheet (金矿)
+# ==========================================
+print("🚀 5. 正在将预测结果推送至 [全息篮球量化交割系统]...")
+gcp_creds_json = os.environ.get("GCP_CREDENTIALS")
+
+if gcp_creds_json:
+    # 解析机器人钥匙
+    creds_dict = json.loads(gcp_creds_json)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets']
+    )
+    # 连接 Google Sheet 服务
+    service = build('sheets', 'v4', credentials=creds)
     
-    if matched_poss:
-        df_box['possessions'] = pd.to_numeric(df_box[matched_poss], errors='coerce').fillna(5.0)
-    else:
-        df_box['possessions'] = 5.0
-    
-    df_rating['game_date'] = pd.to_datetime(df_rating['game_date'])
-    
-    # ==========================================
-    # 步骤 3: 提取今日待预测赛程，计算 V3.9 特征
-    # ==========================================
-    today_features = calculate_v39_features(df_games, df_box, df_rating, today_str)
-    
-    if today_features.empty:
-        print("☀️ 今日没有待计算比赛，Pipeline 任务正常结束。")
-        return
-        
-    # ==========================================
-    # 步骤 4: 将新鲜特征 Upsert 进 Match_Fusion_Features_V3
-    # ==========================================
-    print(f"💾 正在将新计算的 {len(today_features)} 场比赛特征写入 Match_Fusion_Features_V3...")
-    
-    # 强转格式规避 JSON 冲突
-    records = today_features.replace({pd.NA: None}).to_dict(orient='records')
-    
+    # 已经精准填入你的真实表格 ID
+    SPREADSHEET_ID = '12uCcuAfUCkAf3t7RiOTYO00vVAHIdUxSQ3F9j_6wU7I' 
+    RANGE_NAME = '金矿!A1' # 写入到“金矿”工作表，从 A1 格子开始
+
+    # 准备写入的数据（清理空值防崩溃，并把 DataFrame 加上表头转成列表）
+    output_df = output_df.fillna("") 
+    values = [output_df.columns.values.tolist()] + output_df.values.tolist()
+    body = {'values': values}
+
     try:
-        db_client.table("Match_Fusion_Features_V3").upsert(records, on_conflict="game_id").execute()
-        print("   ✅ 特征大宽表更新完成！已成功注入 Supabase！")
+        # 执行写入覆盖操作
+        result = service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME,
+            valueInputOption='RAW', body=body).execute()
+        print(f"✅ 成功更新 {result.get('updatedCells')} 个单元格！『金矿』已填满！")
     except Exception as e:
-        print(f"❌ 写入 Supabase 失败: {e}")
-
-if __name__ == "__main__":
-    main()
+        print(f"❌ 写入 Google Sheet 失败: {e}")
+else:
+    print("⚠️ 未找到 GCP_CREDENTIALS，跳过写入 Google Sheet 环节。")
