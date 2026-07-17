@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import joblib
 from supabase import create_client
+import datetime
 
 # 必须声明以保证 Pickle 正常反序列化
 class V3_9_ProbabilityLayer:
@@ -12,83 +13,94 @@ class V3_9_ProbabilityLayer:
         self.ss = soft_shrink
         self.ps = penalty_shrink
 
-print("===== 🕵️‍♂️ V3.9 模型失败原因深度审计 =====")
+print("===== 《V3.9模型失效原因审计报告》 =====")
 
 url = os.environ.get("SUPABASE_URL")
 key = os.environ.get("SUPABASE_KEY")
 supabase = create_client(url, key)
 
 try:
-    # ==========================================
-    # 1. 检查 v3_9_fusion_model.pkl (训练特征字段)
-    # ==========================================
-    print("\n[1] 检查模型训练特征字段 (Training Features)")
     current_dir = os.path.dirname(os.path.abspath(__file__))
     
+    # ========================================
+    # 任务1: 读取 v3_9_fusion_model.pkl
+    # ========================================
+    print("\n[任务1: 模型文件特征审计]")
     fusion_model = joblib.load(os.path.join(current_dir, 'v3_9_fusion_model.pkl'))
     model_team = fusion_model["team_node"]
     model_player = fusion_model["player_node"]
     
-    # 尝试提取 scikit-learn API 包装的特征名
-    team_features = getattr(model_team, 'feature_names_in_', "无法从模型实例获取 (可能训练时传入的是 numpy 数组)")
-    player_features = getattr(model_player, 'feature_names_in_', "无法从模型实例获取")
+    print(f"1. team_node 模型类型: {type(model_team).__name__}")
+    print(f"2. player_node 模型类型: {type(model_player).__name__}")
     
-    print(f"▶️ Team 模型输入特征: {team_features}")
-    print(f"▶️ Player 模型输入特征: {player_features}")
+    team_feats = getattr(model_team, 'feature_names_in_', "未知 (Numpy Array 格式，需核对传入顺序)")
+    player_feats = getattr(model_player, 'feature_names_in_', "未知 (Numpy Array 格式，需核对传入顺序)")
+    print(f"3. 训练 feature_names:\n   - Team: {team_feats}\n   - Player: {player_feats}")
     
-    # 获取决策树数量作为参考 (Pickle 不直接保存原训练样本数和时间，只能看树规模)
+    # 尝试从 XGBoost booster 提取树的数量作为规模参考
     try:
-        print(f"▶️ Team 模型树数量: {model_team.get_booster().num_boosted_rounds()}")
+        team_trees = len(model_team.get_booster().get_dump())
+        print(f"4. 模型训练样本规模 (决策树数量): {team_trees} 棵树")
     except:
-        pass
+        print("4. 模型训练样本数量: 无法直接从当前 Pickle 提取")
+        
+    # 获取模型文件的最后修改时间
+    model_path = os.path.join(current_dir, 'v3_9_fusion_model.pkl')
+    mtime = os.path.getmtime(model_path)
+    print(f"5. 模型训练日期: {datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')}")
 
-    # ==========================================
-    # 2. 检查当前 1000 场回测数据的分布 (Data Distribution)
-    # ==========================================
-    print("\n[2] 检查 Match_Fusion_Features_V3 当前1000场数据分布")
+    # ========================================
+    # 任务2: 读取 Match_Fusion_Features_V3
+    # ========================================
+    print("\n[任务2: 1000场回测数据分布统计]")
     res_features = supabase.table("Match_Fusion_Features_V3").select(
-        "team_strength_diff, player_impact_diff, rest_days_diff, fatigue_diff, home_advantage"
+        "team_strength_diff, home_advantage, rest_days_diff, fatigue_diff, player_impact_diff"
     ).limit(2000).execute()
     
     df_features = pd.DataFrame(res_features.data)
     
     if df_features.empty:
-        print("⚠️ 数据库表为空！")
+        print("⚠️ 未找到回测数据！")
     else:
-        # 强制转换为 float 计算统计学特征
+        # 强转数值型以计算分布
         for col in df_features.columns:
             df_features[col] = pd.to_numeric(df_features[col], errors='coerce')
             
-        desc = df_features.describe().T[['mean', 'std', 'min', 'max']]
-        print("▶️ V3 表特征统计学分布 (关键看 std 是否为 0)：")
-        print(desc.to_string())
-        
-        # 异常探针：计算有多少场的特征是完全一模一样的 (常数病)
-        unique_counts = df_features.nunique()
-        print("\n▶️ 唯一值数量检查 (如果某特征唯一值只有 1 或 2，说明回填数据全是常数)：")
-        print(unique_counts.to_string())
+        stats = df_features.describe().T[['mean', 'std', 'min', 'max']]
+        print(stats.to_string())
 
-    # ==========================================
-    # 3. 对比假设 (Data Drift Hypothesis)
-    # ==========================================
-    print("\n[3] 数据漂移与特征逻辑初步诊断")
-    print("👉 重点排查方向：请观察上方 `std` (标准差)。如果 std 接近 0，或者 min 和 max 极其接近，")
-    print("👉 意味着我们在执行 `backfill_v3_data.py` 时，由于历史表 WNBA_Game_Features_v2 缺失原始特征，")
-    print("👉 导致 fallback 逻辑 (比如默认 player_impact 都是 10.5 和 10.0) 生成了 1000 行几乎完全一样的死水数据！")
+    # ========================================
+    # 任务3: 对比分析 (逻辑推演)
+    # ========================================
+    print("\n[任务3: 训练分布 VS 回测分布对比分析]")
+    print("📌 寻找特征漂移 (Feature Drift)：")
+    print("   👉 请检查上方统计表中的 `std` (标准差)。如果任何一个核心字段的 std = 0.000 (或者极小)，")
+    print("      说明我们给这1000场比赛回填的特征是死板的“固定值”。无波动的特征会导致模型只能输出固定常数概率。")
+    print("📌 寻找字段顺序错误：")
+    print(f"   👉 模型期望的顺序: {team_feats}")
+    print(f"   👉 代码实际输入的顺序: ['team_strength_diff', 'home_advantage', 'rest_days_diff', 'fatigue_diff']")
+    print("      (如果发现字段错位，会导致例如“疲劳差”被当成了“主场优势”送进模型，引发全面崩溃)")
 
-    # ==========================================
-    # 4. 检查概率融合层 (Probability Layer Parameters)
-    # ==========================================
-    print("\n[4] 检查概率融合层 (v3_9_probability_layer.pkl)")
+    # ========================================
+    # 任务4: 检查概率融合层
+    # ========================================
+    print("\n[任务4: 概率融合层参数审计]")
     prob_layer = joblib.load(os.path.join(current_dir, 'v3_9_probability_layer.pkl'))
     
-    print(f"▶️ Team Weight (团队权重): {prob_layer.tw}")
-    print(f"▶️ Player Weight (球员权重): {prob_layer.pw}")
-    print(f"▶️ Soft Shrink (软收缩系数): {prob_layer.ss}")
-    print(f"▶️ Penalty Shrink (惩罚系数): {prob_layer.ps}")
+    print(f"team_weight = {prob_layer.tw}")
+    print(f"player_weight = {prob_layer.pw}")
+    print(f"soft_shrink = {prob_layer.ss}")
+    print(f"penalty_shrink = {prob_layer.ps}")
     
-    print("\n[5] 审计结论准备完成")
-    print("=========================================")
+    print("\n👉 判断分析：")
+    if prob_layer.ss >= 1.0:
+        print("🔴 发现严重异常：soft_shrink >= 1.0！这会导致概率不仅没有被收缩拉回 0.5，反而被成倍放大，这是高概率频出且极度自信的数学根源！")
+    elif prob_layer.tw + prob_layer.pw != 1.0:
+        print("🔴 发现严重异常：team_weight + player_weight 权重相加不等于 1.0，导致初始融合概率基线扭曲！")
+    else:
+        print("🟢 融合层收缩参数表面正常 (soft_shrink < 1.0，权重和=1)。")
+        
+    print("\n========================================")
 
 except Exception as e:
     print(f"❌ 运行报错: {e}")
