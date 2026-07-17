@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import numpy as np
 from supabase import create_client
 import warnings
 
@@ -30,9 +31,6 @@ try:
     df_games['game_date'] = pd.to_datetime(df_games['match_date_bj'] if 'match_date_bj' in df_games.columns else df_games['game_date'])
     df_games.rename(columns={'match_id': 'game_id'}, errors='ignore', inplace=True)
     
-    # ==========================================
-    # 🚨 核心修复：桥接历史表与生产函数的字段差异
-    # ==========================================
     if 'home_team_id' not in df_games.columns:
         df_games['home_team_id'] = df_games.get('home_team', '')
         df_games['away_team_id'] = df_games.get('away_team', '')
@@ -46,7 +44,6 @@ try:
         
     if 'season' not in df_games.columns:
         df_games['season'] = df_games['game_date'].dt.year.astype(str)
-    # ==========================================
 
     df_box['game_date'] = pd.to_datetime(df_box['game_date'])
     df_rating['game_date'] = pd.to_datetime(df_rating['game_date'])
@@ -80,8 +77,18 @@ try:
     print(f"✅ 特征重构完毕！共生成 {len(final_df)} 场纯血 V3.9 比赛特征。")
 
     print("💾 [4/4] 正在将干净数据覆盖写入 (Upsert) 数据库...")
-    records = final_df.replace({pd.NA: None}).to_dict(orient='records')
     
+    # ==========================================
+    # 🚨 核心终极修复：格式强转，秒杀 JSON 序列化报错
+    # ==========================================
+    # 1. 强制将 Pandas 时间对象转为普通字符串
+    if 'game_date' in final_df.columns:
+        final_df['game_date'] = final_df['game_date'].astype(str)
+    
+    # 2. 将所有 Numpy 数值异常 (NaN) 替换为 Python 原生 None
+    records = final_df.replace({pd.NA: None, np.nan: None}).to_dict(orient='records')
+    # ==========================================
+
     batch_size = 300
     for i in range(0, len(records), batch_size):
         batch = records[i : i + batch_size]
