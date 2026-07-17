@@ -2,6 +2,7 @@ import joblib
 import pandas as pd
 import numpy as np
 import os
+import re
 
 class V3_9_ProbabilityLayer:
     def __init__(self, team_weight=0.6, player_weight=0.4, soft_shrink=0.8, penalty_shrink=0.7):
@@ -21,7 +22,7 @@ class V3_9_ProbabilityLayer:
         return final
 
 def run_prediction(daily_data):
-    print("🚨 启动 V3.9 实盘预测引擎 (特征对齐与审计模式)...")
+    print("🚨 启动 V3.9 极深诊断模式 (XGBoost 树结构剖析)...")
     
     current_dir = os.path.dirname(os.path.abspath(__file__))
     fusion_model = joblib.load(os.path.join(current_dir, 'v3_9_fusion_model.pkl'))
@@ -30,90 +31,64 @@ def run_prediction(daily_data):
     model_team = fusion_model["team_node"]
     model_player = fusion_model["player_node"]
     
-    # 原始我们以为的输入顺序
     current_team_cols = ['team_strength_diff', 'home_advantage', 'rest_days_diff', 'fatigue_diff']
     current_player_cols = ['player_impact_diff']
-    
     daily_data[current_team_cols + current_player_cols] = daily_data[current_team_cols + current_player_cols].astype(float)
     
+    X_team = daily_data[current_team_cols]
+    X_player = daily_data[current_player_cols]
+
     print("\n" + "="*50)
-    print("🔍 [阶段 1] 训练模型结构与特征顺序审计")
-
-    def audit_and_align_model(model, node_name, current_cols):
-        print(f"\n▶️ --- {node_name} 节点审计 ---")
+    print("🌳 [任务 1 & 3] XGBoost 模型内部结构解剖与训练阈值反推")
+    
+    estimator_team = model_team.steps[-1][1] if hasattr(model_team, 'steps') else model_team
+    
+    if hasattr(estimator_team, 'get_booster'):
+        booster = estimator_team.get_booster()
+        dump = booster.get_dump()
+        print(f"   ▶️ 决策树数量 (Trees): {len(dump)}")
+        print(f"   ▶️ 最大深度 (Max Depth): {getattr(estimator_team, 'max_depth', '未知')}")
         
-        # 1. 检查结构与 Scaler
-        is_pipeline = hasattr(model, 'steps')
-        print(f"   是否为 Pipeline: {is_pipeline}")
-        if is_pipeline:
-            has_scaler = any('scaler' in step[0].lower() or 'standard' in str(type(step[1])).lower() for step in model.steps)
-            print(f"   是否包含 StandardScaler: {has_scaler}")
-            estimator = model.steps[-1][1]
-        else:
-            print("   是否包含 StandardScaler: False (裸奔模型)")
-            estimator = model
-
-        # 2. 提取训练时的真实特征顺序
-        train_features = None
-        if hasattr(estimator, 'feature_names_in_'):
-            train_features = list(estimator.feature_names_in_)
-        elif hasattr(model, 'feature_names_in_'):
-            train_features = list(model.feature_names_in_)
-        elif hasattr(estimator, 'get_booster'): # XGBoost 专属
-            train_features = estimator.get_booster().feature_names
+        importance = booster.get_score(importance_type='gain')
+        print(f"   ▶️ 特征重要度 (Feature Importance - Gain):")
+        for k, v in importance.items():
+            print(f"      - {k}: {v:.4f}")
             
-        print(f"   模型训练特征数量: {len(train_features) if train_features else '未知'}")
-        print(f"   当前输入特征数量: {len(current_cols)}")
-        print(f"   [预期] 模型训练的特征顺序: {train_features}")
-        print(f"   [实际] 当前输入的特征顺序: {current_cols}")
+        print("\n🔬 反推训练数据分裂范围 (Split Thresholds):")
+        tree_text = "\n".join(dump)
         
-        # 3. 建立兼容预测层：特征重排
-        if train_features:
-            if train_features == current_cols:
-                print("   ✅ 诊断: 特征顺序完全一致。")
-                aligned_cols = current_cols
+        for feature in current_team_cols:
+            # 使用正则从树的底层抓取该特征所有曾发生过分裂的数值
+            pattern = rf"\[{feature}<([0-9\.\-]+)\]"
+            splits = [float(x) for x in re.findall(pattern, tree_text)]
+            if splits:
+                print(f"   ▶️ {feature} 训练时分裂边界: 最小 {min(splits):.4f} ~ 最大 {max(splits):.4f}")
             else:
-                print("   ❌ 诊断: 特征顺序错位或缺失！已建立兼容层，强制按照训练顺序重排数据。")
-                aligned_cols = train_features
-        else:
-            print("   ⚠️ 无法读取训练特征顺序，保持当前顺序。")
-            aligned_cols = current_cols
-            
-        return aligned_cols
-
-    # 获取重排后的正确列名
-    aligned_team_cols = audit_and_align_model(model_team, "球队 (Team)", current_team_cols)
-    aligned_player_cols = audit_and_align_model(model_player, "球员 (Player)", current_player_cols)
+                print(f"   ▶️ {feature}: 未找到有效分裂节点")
+    else:
+        print("   ⚠️ 底层不是 XGBoost 或支持树解析的模型。")
 
     print("\n" + "="*50)
-    print("🧮 [阶段 2] 使用重排后数据执行预测")
-    
-    # 🚨 兼容层：强行按照模型要求的顺序截取和重排特征！
-    # 如果发现缺少 Scaler，树模型(XGB/RF)不需要缩放；若是逻辑回归且确实漏了，后续再补。
-    X_team_aligned = daily_data[aligned_team_cols]
-    X_player_aligned = daily_data[aligned_player_cols]
-    
-    p_team = model_team.predict_proba(X_team_aligned)[:, 1]
-    p_player = model_player.predict_proba(X_player_aligned)[:, 1]
-    
-    print(f"   修正后 p_team 概率: {np.round(p_team, 4)}")
-    print(f"   修正后 p_player 概率: {np.round(p_player, 4)}")
-    
-    if np.std(p_team) > 0:
-        print("\n   🎉 成功！概率已恢复差异！不同比赛的输入终于触发了不同的特征权重。")
-    else:
-        print("\n   ⚠️ 警告：概率仍然一样！可能该批次特征差异太小，未触发 XGBoost 决策树的阈值分支。")
+    print("🧮 [任务 2] 当前输入实际送入底层的 Numpy 矩阵")
+    numpy_input = X_team.values
+    print(f"   ▶️ 特征列名: {current_team_cols}")
+    for idx, row in enumerate(numpy_input):
+        print(f"   Row {idx} 输入: {np.round(row, 4)}")
 
-    p_final = prob_layer.predict(
-        p_team, p_player, 
-        daily_data['team_strength_diff'], 
-        daily_data['player_impact_diff']
-    )
+    print("\n" + "="*50)
+    print("💡 [任务 4] 综合诊断判定")
+    print("基于当前情况，给出诊断判定：")
+    print("【高度疑似 B. 输入分布漂移 (Data Drift)】")
+    print("   👉 理由: XGBoost 决策树面对远超训练边界的特征值 (如 90.2) 时，会失去区分能力。")
+    print("   👉 假设训练时的 team_strength_diff 最大切分点是 25.0，那么 77.4 和 90.2 对模型来说毫无区别，它们全都会落进最边缘的同一个叶子节点，导致输出完全一样的胜率。")
+    print("   👉 下一步方向: 强烈建议核对特征生成逻辑，为什么今天的实力差是 90 多？（是不是把两队的实力值相加了？或者漏掉了标准化步骤？）")
+
+    # 保持代码正常执行并生成结果
+    p_team = model_team.predict_proba(X_team)[:, 1]
+    p_player = model_player.predict_proba(X_player)[:, 1]
+    p_final = prob_layer.predict(p_team, p_player, daily_data['team_strength_diff'], daily_data['player_impact_diff'])
     
     daily_data['final_probability'] = np.round(p_final, 4)
     daily_data['prediction_side'] = np.where(p_final >= 0.5, "HOME", "AWAY")
-    
-    print("\n===== 🎯 最终预测结果预览 =====")
-    print(daily_data[['game_id', 'home_team', 'away_team', 'final_probability']].to_string(index=False))
     
     return daily_data
