@@ -11,7 +11,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-         fetch-depth: 0  # 确保能读到 src 里的源文件
+         fetch-depth: 0
 
     - name: Set up Python 3.10
       uses: actions/setup-python@v5
@@ -27,12 +27,16 @@ jobs:
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        PYTHONPATH: .
       run: |
+        echo "===== 🚜 启动 V3.9 纯血历史特征重构 ====="
         python historical_backfill_v39.py
 
     - name: 2. 执行 V3.9 终极回测 (Backtest)
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        PYTHONPATH: .
       run: |
+        echo "===== 🚀 启动终极回测 ====="
         python backtest_v39.py
