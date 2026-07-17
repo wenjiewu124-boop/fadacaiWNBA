@@ -1,7 +1,7 @@
 name: V3.9 Historical Backtest
 
 on:
-  workflow_dispatch: # 明确要求：只允许手动触发，绝对不会干扰每日自动运行的生产脚本
+  workflow_dispatch:
 
 jobs:
   run-backtest:
@@ -19,11 +19,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas numpy joblib supabase scikit-learn
+        pip install pandas numpy joblib supabase scikit-learn xgboost
 
     - name: Execute V3.9 Backtest Engine
       env:
-        # 确保回测脚本能正常读取历史数据库
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
       run: |
