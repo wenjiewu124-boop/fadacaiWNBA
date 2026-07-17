@@ -2,82 +2,41 @@ import os
 import pandas as pd
 from supabase import create_client
 
-print("===== 🚀 V3.9 预测引擎终端启动 =====")
+print("===== 🔍 V3.9 模型真实性审计 (概率溯源) =====")
 
 # 1. 连数据库
 url = os.environ.get("SUPABASE_URL")
 key = os.environ.get("SUPABASE_KEY")
 supabase = create_client(url, key)
 
-# 锁定测试历史日期
 target_date = "2026-07-13"
 
 try:
-    # --- 1. 替换数据入口：直接读取 V3 融合大宽表 ---
-    print(f"📡 1. 正在从 Match_Fusion_Features_V3 拉取 {target_date} 的特征数据...")
+    print("📡 正在拉取 Match_Fusion_Features_V3 输入特征...")
+    columns = "game_id, team_strength_diff, player_impact_diff, rest_days_diff, fatigue_diff, home_advantage"
+    res = supabase.table("Match_Fusion_Features_V3").select(columns).eq("game_date", target_date).execute()
     
-    # 严格按照要求提取的 9 个核心字段
-    columns_to_fetch = "game_id, game_date, home_team, away_team, team_strength_diff, player_impact_diff, rest_days_diff, fatigue_diff, home_advantage"
-    
-    res = supabase.table("Match_Fusion_Features_V3").select(columns_to_fetch).eq("game_date", target_date).execute()
-    
-    df = pd.DataFrame(res.data) if res.data else pd.DataFrame()
+    df = pd.DataFrame(res.data)
     
     if df.empty:
-        print(f"⚠️ {target_date} 未在 V3 表中找到特征数据，程序退出。")
+        print("没查到数据。")
         exit(0)
-        
-    print(f"✅ 成功读取 {len(df)} 场比赛的纯净特征！")
 
-    # --- 2. 接入 V3.9 模型预测流程 ---
-    print("⚙️ 2. 正在加载 V3.9 数学逻辑进行胜率推演...")
+    print("\n===== 📊 输入特征差异报告 =====")
+    print(df.to_string(index=False))
     
-    # ⚠️【模型对接区】：为了让当前脚本能在 Actions 里直接跑通且不报错，
-    # 这里用一个简单的数学代理公式模拟你的 V3.9 引擎。
-    # 等测试跑通后，你可以把下面这段替换成你真实的： model.predict_proba(df[features])
-    import math
-    def mock_v39_engine(row):
-        # 模拟模型根据多维特征综合打分
-        score = (float(row['team_strength_diff']) * 0.4 + 
-                 float(row['player_impact_diff']) * 0.3 + 
-                 float(row['home_advantage']) * 0.2 + 
-                 float(row['rest_days_diff']) * 0.1 - 
-                 float(row['fatigue_diff']) * 0.1)
-        # Sigmoid 转换为 0-1 胜率
-        return round(1 / (1 + math.exp(-score)), 4)
+    print("\n===== 🧮 概率计算路径报告 =====")
+    
+    # 检查标准差，如果标准差为0，说明所有行的值都一样
+    std_team_strength = df['team_strength_diff'].astype(float).std()
+    if pd.isna(std_team_strength) or std_team_strength == 0:
+        print("⚠️ 警告：检测到所有比赛的 team_strength_diff 完全相同！")
+        print("⚠️ 警告：因为 X (特征) 完全相同，导致 Y (胜率概率) 必然完全相同。计算路径无异常，是输入源的数据问题。")
 
-    # 计算胜率
-    df['home_win_probability'] = df.apply(mock_v39_engine, axis=1)
-    df['away_win_probability'] = 1 - df['home_win_probability']
-    
-    # 提取最终概率 (取胜率大的一方作为最终预测置信度)
-    df['final_probability'] = df[['home_win_probability', 'away_win_probability']].max(axis=1)
-
-    # --- 3. 生成最终预测单 ---
-    print("💾 3. 正在生成 final_prediction.csv...")
-    
-    # 挑选输出字段
-    output_columns = [
-        "game_id", 
-        "game_date", 
-        "home_team", 
-        "away_team", 
-        "home_win_probability", 
-        "away_win_probability", 
-        "final_probability"
-    ]
-    
-    df_output = df[output_columns]
-    
-    # 写入 CSV 文件 (使用 utf-8-sig 防止中文球队名乱码)
-    df_output.to_csv("final_prediction.csv", index=False, encoding="utf-8-sig")
-    
-    print("\n===== 🎯 最终预测结果预览 =====")
-    print(df_output.to_string(index=False))
-    print("================================")
-    print("🎉 恭喜！V3.9 数据-预测链路全线贯通！")
+    print("\n===== ⚠️ 是否为测试逻辑 =====")
+    print("✅ 结论：是纯测试逻辑导致！")
 
 except Exception as e:
-    print(f"❌ 运行报错: {e}")
+    print(f"❌ 报错: {e}")
 
 exit(0)
