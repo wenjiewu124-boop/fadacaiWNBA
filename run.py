@@ -1,6 +1,9 @@
 import os
+import json
 import pandas as pd
 from supabase import create_client
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 import prediction_engine # 叫醒咱们刚写好的预测引擎
 
 print("🚨 1. 拿着保险箱的钥匙，连接 Supabase 数据库...")
@@ -27,3 +30,38 @@ output_df = result_df[['game_date', 'home_team_cn', 'away_team_cn', 'team_streng
 output_df.to_csv("final_prediction.csv", index=False, encoding='utf-8-sig')
 
 print("✅ 任务圆满完成！今日签批单已生成: final_prediction.csv")
+
+# ==========================================
+# 新增：步骤 5 推送至 Google Sheet (金矿)
+# ==========================================
+print("🚀 5. 正在将预测结果推送至 [全息篮球量化交割系统]...")
+gcp_creds_json = os.environ.get("GCP_CREDENTIALS")
+
+if gcp_creds_json:
+    # 解析机器人钥匙
+    creds_dict = json.loads(gcp_creds_json)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict, scopes=['https://www.googleapis.com/auth/spreadsheets']
+    )
+    # 连接 Google Sheet 服务
+    service = build('sheets', 'v4', credentials=creds)
+    
+    # 已经精准填入你的真实表格 ID
+    SPREADSHEET_ID = '12uCcuAfUCkAf3t7RiOTYO00vVAHIdUxSQ3F9j_6wU7I' 
+    RANGE_NAME = '金矿!A1' # 写入到“金矿”工作表，从 A1 格子开始
+
+    # 准备写入的数据（清理空值防崩溃，并把 DataFrame 加上表头转成列表）
+    output_df = output_df.fillna("") 
+    values = [output_df.columns.values.tolist()] + output_df.values.tolist()
+    body = {'values': values}
+
+    try:
+        # 执行写入覆盖操作
+        result = service.spreadsheets().values().update(
+            spreadsheetId=SPREADSHEET_ID, range=RANGE_NAME,
+            valueInputOption='RAW', body=body).execute()
+        print(f"✅ 成功更新 {result.get('updatedCells')} 个单元格！『金矿』已填满！")
+    except Exception as e:
+        print(f"❌ 写入 Google Sheet 失败: {e}")
+else:
+    print("⚠️ 未找到 GCP_CREDENTIALS，跳过写入 Google Sheet 环节。")
