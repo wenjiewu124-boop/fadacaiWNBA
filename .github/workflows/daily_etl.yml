@@ -28,3 +28,5 @@ jobs:
         run: |
           python main.py
           python run.py
+      - name: 📦 安装数据库与计算依赖
+        run: pip install pandas numpy supabase requests urllib3 joblib xgboost scikit-learn
