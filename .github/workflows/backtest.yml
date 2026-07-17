@@ -1,10 +1,10 @@
-name: V3.9 Historical Backtest
+name: V3.9 Failure Audit
 
 on:
   workflow_dispatch:
 
 jobs:
-  run-backtest:
+  run-audit:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,30 +21,10 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas numpy joblib supabase scikit-learn xgboost
 
-    - name: Execute V3.9 Backfill Engine
+    - name: Execute V3.9 Audit Engine
       env:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        API_BASKETBALL_KEY: ${{ secrets.API_BASKETBALL_KEY }}
       run: |
-        echo "===== 🚜 运行历史数据补齐 (Backfill) ====="
-        python backfill_v3_data.py
-
-    - name: Execute V3.9 Backtest Engine
-      env:
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
-        API_BASKETBALL_KEY: ${{ secrets.API_BASKETBALL_KEY }}
-      run: |
-        echo "===== 🚀 V3.9 Historical Backtest Engine ====="
-        python backtest_v39.py
-
-    - name: Upload Backtest Reports (CSV & TXT)
-      uses: actions/upload-artifact@v4
-      with:
-        name: V39_Backtest_Results
-        path: |
-          V3.9_Backtest_Report.csv
-          V3.9_Backtest_Summary.txt
+        echo "===== 🕵️‍♂️ 启动 V3.9 失败原因审计 ====="
+        python audit_v39_failure.py
